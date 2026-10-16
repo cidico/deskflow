@@ -42,6 +42,11 @@ public:
   {
     return m_isActive;
   }
+  //! Turn the portal clipboard handling off when another backend owns the clipboard
+  void setPortalClipboardEnabled(bool enabled)
+  {
+    m_portalClipboardEnabled = enabled;
+  }
 
 private:
   void glibThread(const void *);
@@ -172,6 +177,7 @@ private:
   std::vector<BarrierInfo> m_barrierInfo;
 
   EiClipboard *m_clipboard = nullptr;
+  bool m_portalClipboardEnabled = true;
 };
 
 } // namespace deskflow

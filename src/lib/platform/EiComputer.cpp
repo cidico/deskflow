@@ -20,6 +20,9 @@
 #include "platform/EiKeyState.h"
 #include "platform/PortalInputCapture.h"
 #include "platform/PortalRemoteDesktop.h"
+#ifdef HAVE_WL_DATA_CONTROL
+#include "platform/WlDataControlClipboard.h"
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -28,6 +31,11 @@
 #include <cstring>
 #include <unistd.h>
 #include <vector>
+
+#ifdef HAVE_WL_DATA_CONTROL
+#include <QDBusConnection>
+#include <QDBusInterface>
+#endif
 
 // Values are in fractional wheel-click units (1.0 == one full 120-unit click) for trackpad
 // and pixels in scroll wheel events.
@@ -38,6 +46,50 @@ struct ScrollRemainder
 };
 
 namespace deskflow {
+
+#ifdef HAVE_WL_DATA_CONTROL
+namespace {
+bool portalClipboardAvailable()
+{
+  QDBusInterface portal(
+      "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Clipboard",
+      QDBusConnection::sessionBus()
+  );
+  return portal.isValid() && portal.property("version").toUInt() > 0;
+}
+} // namespace
+
+void EiComputer::startDataControlClipboard()
+{
+  delete m_dataControlClipboard;
+  m_dataControlClipboard = nullptr;
+
+  if (!m_portalInputCapture)
+    return;
+
+  if (portalClipboardAvailable()) {
+    LOG_INFO("clipboard: using xdg portal");
+    return;
+  }
+
+  LOG_INFO("clipboard: portal has no clipboard interface, trying wayland data-control");
+  m_dataControlClipboard = new WlDataControlClipboard(
+      m_portalInputCapture->getClipboard(kClipboardClipboard),
+      [this] { return static_cast<qint64>(maximumClipboardSize()) * 1024; },
+      [this] {
+        sendClipboardEvent(EventTypes::ClipboardGrabbed, kClipboardClipboard);
+        sendClipboardEvent(EventTypes::ClipboardChanged, kClipboardClipboard);
+      }
+  );
+
+  if (m_dataControlClipboard->isAvailable()) {
+    m_portalInputCapture->setPortalClipboardEnabled(false);
+  } else {
+    delete m_dataControlClipboard;
+    m_dataControlClipboard = nullptr;
+  }
+}
+#endif
 
 EiComputer::EiComputer(bool isPrimary, IEventQueue *events, bool usePortal)
     : PlatformComputer{events},
@@ -61,6 +113,9 @@ EiComputer::EiComputer(bool isPrimary, IEventQueue *events, bool usePortal)
     if (isPrimary) {
       // Portal input capture manages its own clipboard
       m_portalInputCapture = new PortalInputCapture(this, m_events);
+#ifdef HAVE_WL_DATA_CONTROL
+      startDataControlClipboard();
+#endif
 #ifdef HAVE_LIBPORTAL_SHORTCUTS
       m_portalGlobalShortcuts = new PortalGlobalShortcuts(this, m_events);
 #endif
@@ -102,6 +157,9 @@ EiComputer::~EiComputer()
 
 #ifdef HAVE_LIBPORTAL_SHORTCUTS
   delete m_portalGlobalShortcuts;
+#endif
+#ifdef HAVE_WL_DATA_CONTROL
+  delete m_dataControlClipboard;
 #endif
   delete m_portalInputCapture;
   delete m_portalRemoteDesktop;
@@ -491,7 +549,12 @@ bool EiComputer::setClipboard(ClipboardID id, const IClipboard *clipboard)
     if (!targetClipboard) {
       return false;
     }
-    return IClipboard::copy(targetClipboard, clipboard);
+    const bool ok = IClipboard::copy(targetClipboard, clipboard);
+#ifdef HAVE_WL_DATA_CONTROL
+    if (ok && m_dataControlClipboard && id == kClipboardClipboard)
+      m_dataControlClipboard->claimFromCache();
+#endif
+    return ok;
   }
 
   // Otherwise use our own clipboard
@@ -1004,8 +1067,16 @@ void EiComputer::handleSystemEvent(const Event &)
           if (m_portalInputCapture->isActive()) {
             m_portalInputCapture->release();
           }
+#ifdef HAVE_WL_DATA_CONTROL
+          // the data-control backend writes into the capture's cache, which is replaced here
+          delete m_dataControlClipboard;
+          m_dataControlClipboard = nullptr;
+#endif
           delete m_portalInputCapture;
           m_portalInputCapture = new PortalInputCapture(this, this->m_events);
+#ifdef HAVE_WL_DATA_CONTROL
+          startDataControlClipboard();
+#endif
         }
       }
       this->handlePortalSessionClosed();

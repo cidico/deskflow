@@ -20,6 +20,22 @@ if(UNIX AND NOT APPLE)
   check_symbol_exists(xdp_session_request_clipboard "libportal/portal-helpers.h;libportal/clipboard.h" HAVE_LP_CLIPBOARD)
   check_symbol_exists(xdp_global_shortcut_new "libportal/globalshortcuts.h" HAVE_LP_SHORTCUTS)
   cmake_pop_check_state()
+
+  # In-process Wayland data-control clipboard, for compositors whose portal has no Clipboard interface
+  set(HAVE_WL_DATA_CONTROL OFF)
+  if(HAVE_LP_CLIPBOARD)
+    pkg_check_modules(WAYLAND_CLIENT QUIET wayland-client)
+    pkg_check_modules(WAYLAND_PROTOCOLS QUIET "wayland-protocols >= 1.39")
+    find_program(WAYLAND_SCANNER wayland-scanner)
+    if(WAYLAND_PROTOCOLS_FOUND)
+      pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+    endif()
+    set(EXT_DATA_CONTROL_XML "${WAYLAND_PROTOCOLS_DIR}/staging/ext-data-control/ext-data-control-v1.xml")
+    if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER AND WAYLAND_PROTOCOLS_DIR AND EXISTS "${EXT_DATA_CONTROL_XML}")
+      set(HAVE_WL_DATA_CONTROL ON)
+    endif()
+  endif()
+  message(STATUS "wayland data-control clipboard: ${HAVE_WL_DATA_CONTROL}")
 endif()
 
 if(WIN32)
@@ -166,6 +182,28 @@ elseif(UNIX)
           PortalClipboard.cpp
           PortalClipboard.h
         )
+        if(HAVE_WL_DATA_CONTROL)
+          set(WL_DATA_CONTROL_HEADER ${CMAKE_CURRENT_BINARY_DIR}/ext-data-control-v1-client-protocol.h)
+          set(WL_DATA_CONTROL_CODE ${CMAKE_CURRENT_BINARY_DIR}/ext-data-control-v1-protocol.c)
+          add_custom_command(
+            OUTPUT ${WL_DATA_CONTROL_HEADER}
+            COMMAND ${WAYLAND_SCANNER} client-header ${EXT_DATA_CONTROL_XML} ${WL_DATA_CONTROL_HEADER}
+            DEPENDS ${EXT_DATA_CONTROL_XML}
+            VERBATIM
+          )
+          add_custom_command(
+            OUTPUT ${WL_DATA_CONTROL_CODE}
+            COMMAND ${WAYLAND_SCANNER} private-code ${EXT_DATA_CONTROL_XML} ${WL_DATA_CONTROL_CODE}
+            DEPENDS ${EXT_DATA_CONTROL_XML}
+            VERBATIM
+          )
+          list(APPEND PLATFORM_SOURCES
+            WlDataControlClipboard.cpp
+            WlDataControlClipboard.h
+            ${WL_DATA_CONTROL_HEADER}
+            ${WL_DATA_CONTROL_CODE}
+          )
+        endif()
       endif()
       if(HAVE_LP_SHORTCUTS)
         list(APPEND PLATFORM_SOURCES
@@ -198,6 +236,11 @@ if(UNIX)
     endif()
     if (HAVE_LP_CLIPBOARD)
       target_compile_definitions(platform PUBLIC HAVE_LIBPORTAL_CLIPBOARD)
+    endif()
+    if (HAVE_WL_DATA_CONTROL)
+      target_compile_definitions(platform PUBLIC HAVE_WL_DATA_CONTROL)
+      target_include_directories(platform PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${WAYLAND_CLIENT_INCLUDE_DIRS})
+      target_link_libraries(platform PRIVATE ${WAYLAND_CLIENT_LINK_LIBRARIES})
     endif()
     if (HAVE_LP_SHORTCUTS)
       target_compile_definitions(platform PUBLIC HAVE_LIBPORTAL_SHORTCUTS)

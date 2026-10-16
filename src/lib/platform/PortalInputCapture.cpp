@@ -278,6 +278,8 @@ void PortalInputCapture::readClipboardSelection(XdpSession *session) const
 void PortalInputCapture::handleSelectionTransfer(XdpSession *session, const char *mimeType, uint32_t serial) const
 {
 #ifdef HAVE_LIBPORTAL_CLIPBOARD
+  if (!m_portalClipboardEnabled)
+    return;
   if (m_isActive) {
     LOG_DEBUG("skipping clipboard selection transfer, clipboard is active");
     return;
@@ -740,7 +742,7 @@ void PortalInputCapture::handleActivated(
   m_isActive = true;
 
 #ifdef HAVE_LIBPORTAL_CLIPBOARD
-  if (m_session) {
+  if (m_session && m_portalClipboardEnabled) {
     LOG_DEBUG("reading clipboard selection on activation");
     m_computer->sendClipboardEvent(EventTypes::ClipboardGrabbed, kClipboardClipboard);
 
@@ -757,7 +759,7 @@ void PortalInputCapture::handleActivated(
 
     claimClipboardOwnership(session);
     LOG_DEBUG("activation clipboard handling complete");
-  } else {
+  } else if (!m_session) {
     LOG_WARN("input capture activated without a session, skipping clipboard read");
   }
 #endif

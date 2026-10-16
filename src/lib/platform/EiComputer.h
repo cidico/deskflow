@@ -35,6 +35,9 @@ class PortalRemoteDesktop;
 class PortalInputCapture;
 class PortalGlobalShortcuts;
 class EiClipboard;
+#ifdef HAVE_WL_DATA_CONTROL
+class WlDataControlClipboard;
+#endif
 
 using ClipboardInfo = IComputer::ClipboardInfo;
 
@@ -133,6 +136,9 @@ private:
   void stopEmulating() const;
   void cancelIdleEmulationTimer() const;
   void updatePortalGlobalShortcuts();
+#ifdef HAVE_WL_DATA_CONTROL
+  void startDataControlClipboard();
+#endif
 
   static void handleEiLogEvent(ei *ei, const ei_log_priority priority, const char *message, ei_log_context *)
   {
@@ -198,6 +204,9 @@ private:
   PortalRemoteDesktop *m_portalRemoteDesktop = nullptr;
   PortalInputCapture *m_portalInputCapture = nullptr;
   PortalGlobalShortcuts *m_portalGlobalShortcuts = nullptr;
+#ifdef HAVE_WL_DATA_CONTROL
+  WlDataControlClipboard *m_dataControlClipboard = nullptr;
+#endif
 
   bool m_activated = false;
 
