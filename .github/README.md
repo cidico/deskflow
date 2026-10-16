@@ -1,3 +1,133 @@
+# Deskflow com área de transferência no Hyprland
+
+> **Este é um fork pessoal.** O branch `hyprland` é o Deskflow **1.27.0 oficial** (tag `v1.27.0`) com dois
+> commits de código e este texto por cima. Para ver exatamente o que muda: `git log v1.27.0..hyprland`.
+> O README original do projeto continua logo abaixo desta seção.
+
+## Por que este fork existe
+
+O cenário: servidor Linux com **Hyprland** (Wayland) controlando um cliente **Windows 11**.
+
+Com o Deskflow 1.27 oficial, mouse e teclado funcionavam, mas **copiar e colar não funcionava em nenhum sentido**:
+
+- No Wayland, a 1.27 só compartilha a área de transferência pelo portal XDG (`org.freedesktop.portal.Clipboard`).
+  O portal do Hyprland (`xdg-desktop-portal-hyprland` 1.4.1, a versão mais recente em outubro de 2026) não
+  implementa essa interface.
+- Até a 1.26 havia um caminho alternativo (`wlClipboard`), que chamava `wl-copy` e `wl-paste` como programas
+  externos. Ele foi removido na 1.27, e os mantenedores disseram que não vão trazê-lo de volta
+  ([deskflow/deskflow#10135](https://github.com/deskflow/deskflow/issues/10135)).
+- Esse caminho antigo também causava problemas sérios, observados aqui na 1.26:
+  - o `wl-copy` herdava o socket do servidor e continuava segurando a porta 24800 depois que o servidor parava.
+    O cliente conectava numa porta que ninguém atendia, e o servidor reiniciado não conseguia abrir a porta;
+  - a cada segundo ele lia a área de transferência inteira, imagem incluída;
+  - podia bloquear o servidor por até 30 s esperando um `wl-paste`.
+
+## O que muda
+
+### 1. Área de transferência pelo `ext-data-control` (`feat(wayland)`)
+
+O Hyprland oferece o protocolo `ext-data-control-v1`, padronizado no pacote oficial `wayland-protocols`. É o
+mesmo canal que os gerenciadores de área de transferência usam, e o que o `wl-copy` usa por baixo. O servidor
+passa a falar com ele diretamente:
+
+- **Só entra quando o portal não tem área de transferência.** Com portal (KDE, GNOME), o comportamento oficial
+  não muda. Se um dia o Hyprland implementar o portal, este código se desliga sozinho.
+- Conexão Wayland própria, numa thread separada: nada bloqueia o servidor.
+- Nenhum processo externo, e todos os descritores com `CLOEXEC`.
+- Leitura e escrita com prazo máximo e limite de tamanho.
+- A própria seleção leva o tipo `application/x-deskflow-owned`, para não haver eco.
+- Texto em UTF-8. Imagens em PNG no Linux e em DIB na rede do Deskflow, com a conversão que a 1.27 já tem.
+
+Arquivos: `src/lib/platform/WlDataControlClipboard.{h,cpp}` (novo) e as ligações em `EiComputer`,
+`PortalInputCapture` e `src/lib/platform/CMakeLists.txt`.
+
+### 2. Não mandar área de transferência vazia na troca de tela (`fix(server)`)
+
+Cada cliente começa com todas as áreas de transferência marcadas como pendentes. Na primeira troca de tela
+depois que um cliente conecta, o servidor mandava a área principal, com o conteúdo, e logo depois a área de
+seleção, vazia. O cliente Windows grava as duas no mesmo lugar e ficava com a área de transferência vazia, a cada
+reconexão. Agora o servidor não manda área vazia; as demais trocas continuam iguais.
+
+Arquivo: `src/lib/server/Server.cpp`.
+
+## Como foi validado (16/10/2026)
+
+Teste automático contra o Hyprland real, com `wl-copy` e `wl-paste` do outro lado:
+
+| Caso | Resultado |
+| --- | --- |
+| Texto com acentos e emoji, Linux → Deskflow | idêntico |
+| Texto, Deskflow → Linux | idêntico, sem eco |
+| Imagem PNG 3840x2160, Linux → Deskflow | pixels idênticos |
+| Imagem 1920x1080, Deskflow → Linux | pixels idênticos, sem eco |
+| Descritores e processos | estáveis, nenhum processo filho |
+
+Ponta a ponta, servidor Hyprland com cliente Windows 11 no Deskflow 1.27.0 oficial:
+
+| Sentido | Resultado |
+| --- | --- |
+| Texto Linux → Windows | idêntico, byte a byte (acentos, emoji, japonês) |
+| Texto Windows → Linux | idêntico, byte a byte (acentos, emoji, chinês) |
+| Imagem Linux → Windows (1920x1080) | 0 pixel diferente |
+| Imagem Windows → Linux (1280x720) | 0 pixel diferente |
+
+Em 16 trocas de tela, nenhum travamento do servidor e nenhum processo pendurado.
+
+## Limitação conhecida
+
+Se um programa no Windows copiar algo **enquanto o cursor está no Linux**, a cópia não chega. Nesse momento o
+cliente Windows manda a área principal vazia e o conteúdo só na área de seleção, que o servidor no Wayland
+ignora. No uso normal, copiando com o cursor no Windows, o conteúdo vai na saída da tela.
+
+## Compilar e instalar (Arch Linux)
+
+Por que compilar: o pacote Arch publicado na release 1.27.0 foi gerado com uma `libportal` mais nova que a 0.10 do
+Arch e não abre (`undefined symbol: xdp_global_shortcut_free`). O código-fonte da 1.27 compila com a 0.10; só os
+atalhos globais do portal ficam desligados.
+
+Além das dependências do Deskflow, são necessários `wayland` (cliente e `wayland-scanner`) e
+`wayland-protocols` 1.39 ou mais novo.
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$HOME/.local/opt/deskflow" -DBUILD_TESTS=OFF
+cmake --build build -j 16
+cmake --install build
+```
+
+A configuração deve mostrar `wayland data-control clipboard: ON`. Ao subir o servidor, o log mostra
+`clipboard: using wayland data-control (ext-data-control-v1)`.
+
+## Atualizar para uma versão nova do Deskflow
+
+```sh
+git fetch origin --tags
+git rebase --onto v1.28.0 v1.27.0 hyprland   # troque v1.28.0 pela versão nova
+cmake --build build -j 16 && cmake --install build
+# refazer o teste de copiar e colar nos quatro sentidos antes de publicar
+git push --force-with-lease cidico hyprland
+```
+
+Este fork deixa de ser necessário quando o Hyprland implementar o portal de área de transferência ou quando o
+Deskflow aceitar um caminho equivalente.
+
+## Ajustes de ambiente feitos junto (fora do código)
+
+- **Teclado do Windows trocando sozinho para ABNT.** Aqui o Windows usa só "Estados Unidos (internacional)", mas
+  os perfis do sistema (tela de boas-vindas e a conta SYSTEM, que roda o serviço do Deskflow) tinham o ABNT como
+  segundo teclado. O serviço trazia esse ABNT para a sessão como layout fantasma, e o atalho Alt+Shift alternava
+  para ele, quebrando acentos e ç. A correção foi copiar as configurações do usuário para o sistema
+  (`Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true`), desligar os atalhos de troca de
+  teclado e descarregar o ABNT fantasma. Para conferir, o log do cliente deve listar um só layout
+  (`local layouts: pt`).
+- **Aviso "Missing Keyboard Layouts" no Windows.** Ele compara idiomas, não teclados: o EUA internacional do Linux
+  é anunciado como `en`, e o do Windows como `pt`. O aviso só importa para a sincronização de idioma, que vem
+  desligada, e foi silenciado com `gui/ignoreMissingKeyboardLayouts=true`.
+
+---
+
+<!-- README original do Deskflow a partir daqui -->
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/deskflow/deskflow-artwork/blob/main/logo/deskflow-logo-dark-200px.png?raw=true">
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/deskflow/deskflow-artwork/blob/main/logo/deskflow-logo-light-200px.png?raw=true">
