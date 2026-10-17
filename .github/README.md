@@ -1,6 +1,6 @@
 # Deskflow com área de transferência no Hyprland
 
-> **Este é um fork pessoal.** O branch `hyprland` é o Deskflow **1.27.0 oficial** (tag `v1.27.0`) com dois
+> **Este é um fork pessoal.** O branch `hyprland` é o Deskflow **1.27.0 oficial** (tag `v1.27.0`) com três
 > commits de código e este texto por cima. Para ver exatamente o que muda: `git log v1.27.0..hyprland`.
 > O README original do projeto continua logo abaixo desta seção.
 
@@ -50,6 +50,21 @@ reconexão. Agora o servidor não manda área vazia; as demais trocas continuam 
 
 Arquivo: `src/lib/server/Server.cpp`.
 
+### 3. Rolagem do mouse no Hyprland (`fix(wayland)`)
+
+O Hyprland 0.56 manda cada clique da roda duas vezes na captura: como rolagem contínua (15) e como rolagem por
+clique, que deveria valer 120 mas leva o mesmo 15. A 1.27 somava as duas num único acumulador, uma contada em
+cliques e a outra em unidades de 120, e a partir do segundo clique da roda o Windows recebia uns 16 cliques de
+uma vez (cerca de 50 linhas). Agora o servidor:
+
+- descarta a cópia por clique quando a rolagem contínua já veio no mesmo quadro;
+- converte 15 de rolagem contínua em 1 clique, a escala do próprio Hyprland e do libinput;
+- guarda os restos das duas rolagens separados, para que uma não infle a outra.
+
+Cada clique da roda chega ao cliente como exatamente 1 clique (120 unidades), como um mouse ligado nele.
+
+Arquivo: `src/lib/platform/EiComputer.cpp`.
+
 ## Como foi validado (16/10/2026)
 
 Teste automático contra o Hyprland real, com `wl-copy` e `wl-paste` do outro lado:
@@ -72,6 +87,10 @@ Ponta a ponta, servidor Hyprland com cliente Windows 11 no Deskflow 1.27.0 ofici
 | Imagem Windows → Linux (1280x720) | 0 pixel diferente |
 
 Em 16 trocas de tela, nenhum travamento do servidor e nenhum processo pendurado.
+
+Rolagem (17/10/2026), gravada no Windows com um gancho de mouse de baixo nível enquanto a roda girava para os
+dois lados: dos 175 eventos que chegaram, todos valiam exatamente ±120, na vertical e na horizontal. Antes da
+correção, cada clique da roda chegava como ±1920 ou ±2040.
 
 ## Limitação conhecida
 
@@ -104,7 +123,7 @@ A configuração deve mostrar `wayland data-control clipboard: ON`. Ao subir o s
 git fetch origin --tags
 git rebase --onto v1.28.0 v1.27.0 hyprland   # troque v1.28.0 pela versão nova
 cmake --build build -j 16 && cmake --install build
-# refazer o teste de copiar e colar nos quatro sentidos antes de publicar
+# refazer o teste de copiar e colar nos quatro sentidos e o de rolagem antes de publicar
 git push --force-with-lease cidico hyprland
 ```
 
