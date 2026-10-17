@@ -37,12 +37,15 @@
 #include <QDBusInterface>
 #endif
 
-// Values are in fractional wheel-click units (1.0 == one full 120-unit click) for trackpad
-// and pixels in scroll wheel events.
+// Smooth scroll is kept in fractional wheel-click units (1.0 == one full 120-unit click)
+// and discrete scroll in 120 units, apart so that one never inflates the other.
 struct ScrollRemainder
 {
   double x;
   double y;
+  int32_t discreteX;
+  int32_t discreteY;
+  bool deltaInFrame;
 };
 
 namespace deskflow {
@@ -877,7 +880,8 @@ void EiComputer::onPointerScrollEvent(ei_event *event)
   // to the client. Sub-120 fractional clicks are silently ignored by
   // compositors on the receiving end, so accumulating full clicks avoids
   // flooding the network with events that the client drops anyway.
-  static const double s_wheelClicksPerPixel = 0.1; // 10 pixels == 1 full wheel click
+  // Hyprland reports 15 units per wheel detent, the libinput convention.
+  static const double s_wheelClicksPerPixel = 1.0 / 15; // 15 pixels == 1 full wheel click
 
   assert(m_isPrimary);
 
@@ -918,6 +922,7 @@ void EiComputer::onPointerScrollEvent(ei_event *event)
 
   remainder->x = accX;
   remainder->y = accY;
+  remainder->deltaInFrame = true;
 }
 
 void EiComputer::onPointerScrollDiscreteEvent(ei_event *event)
@@ -932,7 +937,6 @@ void EiComputer::onPointerScrollDiscreteEvent(ei_event *event)
 
   LOG_VERBOSE("event: scroll discrete (%d, %d)", dx, dy);
 
-  // accumulate fractional ticks, then emit 120 units at a time
   struct ei_device *device = ei_event_get_device(event);
   auto *remainder = static_cast<struct ScrollRemainder *>(ei_device_get_user_data(device));
   if (!remainder) {
@@ -940,12 +944,19 @@ void EiComputer::onPointerScrollDiscreteEvent(ei_event *event)
     ei_device_set_user_data(device, remainder);
   }
 
-  double ax = remainder->x + dx;
-  double ay = remainder->y + dy;
-  auto cx = static_cast<int32_t>(ax / s_scrollDelta) * s_scrollDelta;
-  auto cy = static_cast<int32_t>(ay / s_scrollDelta) * s_scrollDelta;
-  remainder->x = ax - cx;
-  remainder->y = ay - cy;
+  // Hyprland sends every wheel detent twice in one frame: first as a smooth
+  // delta, then as a discrete value that carries the same 15 instead of 120.
+  // The delta already moved the client, so the discrete copy is dropped.
+  if (remainder->deltaInFrame)
+    return;
+
+  // accumulate fractional ticks, then emit 120 units at a time
+  auto ax = remainder->discreteX + dx;
+  auto ay = remainder->discreteY + dy;
+  auto cx = ax / s_scrollDelta * s_scrollDelta;
+  auto cy = ay / s_scrollDelta * s_scrollDelta;
+  remainder->discreteX = ax - cx;
+  remainder->discreteY = ay - cy;
 
   // libei and deskflow seem to use opposite directions, so we have
   // to send the opposite of the value reported by EI if we want to
@@ -1102,6 +1113,8 @@ void EiComputer::handleSystemEvent(const Event &)
 
     // events below are for a receiver context (barriers)
     case EI_EVENT_FRAME:
+      if (auto *remainder = static_cast<struct ScrollRemainder *>(ei_device_get_user_data(device)))
+        remainder->deltaInFrame = false;
       break;
     case EI_EVENT_DEVICE_START_EMULATING:
       LOG_DEBUG("device %s started emulating", ei_device_get_name(device));
